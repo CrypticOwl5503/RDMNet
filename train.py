@@ -17,15 +17,15 @@ from utils.utils_fit import fit_one_epoch
 
 if __name__ == "__main__":
     Cuda = True
-    os.environ["CUDA_VISIBLE_DEVICES"] = '1'
-    classes_path = 'model_data/rtts_classes.txt'
+    os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+    classes_path = '/content/RDMNet/model_data/rtts_classes.txt'
     model_path = 'model_data/yolox_s.pth'                 # Pretrained weights for better performance (COCO or VOC）
     # model_path = ''  # No pretrained weights
-    dataset_dir = r'/home/pipi/VSST/wxf/Dataset'
+    dataset_dir = r'/content/Datasets(2)'
 
     weather = 'Snow'  # Snow, Rain, Haze, Mixed
-    train_annotation_path = f'Datasets/train_{weather}.txt'
-    val_annotation_path = f'Datasets/test_{weather}.txt'
+    train_annotation_path = f'/content/RDMNet/Datasets/train_{weather}.txt'
+    val_annotation_path = f'/content/RDMNet/Datasets/test_{weather}.txt'
 
     input_shape = [640, 640]
     phi = 's'
