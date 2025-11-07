@@ -6,6 +6,7 @@ import torch.nn as nn
 from nets.darknet import BaseConv, CSPDarknet, CSPLayer, DWConv, SCBottleneck
 from nets.degradation_encoder import UDE
 from nets.restoration import Encoder, Decoder, UpSample, CAB
+from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 
 
 class YOLOXHead(nn.Module):
@@ -324,16 +325,18 @@ class YOLOPAFPN(nn.Module):
 
 
 class YoloBody(nn.Module):
-    def __init__(self, num_classes, phi):
+    def __init__(self, num_classes, phi, use_dce=False):
         super().__init__()
         depth_dict = {'nano': 0.33, 'tiny': 0.33, 's': 0.33, 'm': 0.67, 'l': 1.00, 'x': 1.33, }
         width_dict = {'nano': 0.25, 'tiny': 0.375, 's': 0.50, 'm': 0.75, 'l': 1.00, 'x': 1.25, }
-        depth, width = depth_dict[phi], width_dict[phi]  # phi='s'
+        depth, width = depth_dict[phi], width_dict[phi]
         depthwise = True if phi == 'nano' else False
-        base_channels = int(width * 64)  # 32
+        base_channels = int(width * 64)
+
+        self.use_dce = use_dce
 
         # degradation representations
-        self.UDE = UDE()
+        self.UDE = UDE(use_dce=use_dce)
         # feature extraction and fusion
         self.encoder = Encoder(in_channels=3, n_feats=base_channels, reduction=8, relu=False)
         self.backbone = YOLOPAFPN(depth, width, base_channels=base_channels, depthwise=depthwise, relu=False)
@@ -342,13 +345,18 @@ class YoloBody(nn.Module):
         self.head = YOLOXHead(num_classes, width, depthwise=depthwise)
         self.decoder = Decoder(out_channel=3, n_feats=base_channels, reduction=8, relu=False)
 
-    def forward(self, x):
+    def forward(self, x, context_pairs=None):
+        """
+        Args:
+            x: Input images
+            context_pairs: Optional tuple of (degrad_context, clean_context) tensors
+        """
         logits, labels = 0, 0
         if self.training:
-            x, posimg = x.chunk(2, dim=0)  # split haze images, posimgs (Batchsize, Batchsize)
-            logits, labels, inter = self.UDE(x, posimg)
+            x, posimg = x.chunk(2, dim=0)
+            logits, labels, inter = self.UDE(x, posimg, context_pairs=context_pairs)
         else:
-            inter = self.UDE(x)
+            inter = self.UDE(x, context_pairs=context_pairs)
         encoder_outs = self.encoder(x, inter)
         afpn_outs, res_feats = self.backbone(x, encoder_outs, inter)
         detected = self.head(afpn_outs)

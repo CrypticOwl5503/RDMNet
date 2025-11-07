@@ -116,14 +116,14 @@ class MoCo(nn.Module):
         """
         if self.training:
             # compute query features
-            q, inter = self.encoder_q(im_q)  # queries: NxC
+            q, inter = self.encoder_q(im_q, context_pairs) 
             q = nn.functional.normalize(q, dim=1)
 
             # compute key features
             with torch.no_grad():  # no gradient to keys
                 self._momentum_update_key_encoder()  # update the key encoder
 
-                k, _ = self.encoder_k(im_k)  # keys: NxC
+                k, _ = self.encoder_k(im_k, context_pairs)  
                 k = nn.functional.normalize(k, dim=1)
 
             # compute logits
@@ -148,7 +148,7 @@ class MoCo(nn.Module):
 
             return logits, labels, inter
         else:
-            _, inter = self.encoder_q(im_q)
+            _, inter = self.encoder_q(im_q, context_pairs)
 
             return inter
 

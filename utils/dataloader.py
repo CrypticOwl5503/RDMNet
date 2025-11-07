@@ -1,4 +1,6 @@
 import os
+from torchvision.transforms import Compose, ToPILImage, Resize, CenterCrop, ToTensor, Normalize
+import random
 from random import sample, shuffle
 from turtle import clear
 
@@ -21,6 +23,7 @@ class YoloDataset(Dataset):
         self.mosaic = mosaic
         self.train = train
         self.mosaic_ratio = mosaic_ratio
+        self.use_dc = use_dc
 
         self.image_dir = 'VOC_Clean/train/CleanImages' if self.train else 'VOC_Clean/test/CleanImages'
 
@@ -29,8 +32,45 @@ class YoloDataset(Dataset):
         self.epoch_now = -1
         self.length = len(self.annotation_lines)
 
+        # CLIP preprocessing transform for context images
+        if self.use_dce:
+            self.context_transform = Compose([
+                ToPILImage(),
+                Resize(224, interpolation=Image.BICUBIC),
+                CenterCrop(224),
+                ToTensor(),
+                Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+            ])
+
     def __len__(self):
         return self.length
+
+    def _get_context_pair(self, annotation_line):
+        """Get a random context pair from the same degradation type"""
+        # Get all lines with same degradation type (simplified - you may need to adapt)
+        # For now, randomly select another line
+        context_idx = random.randint(0, self.length - 1)
+        context_line = self.annotation_lines[context_idx]
+        
+        # Parse context line
+        line_content = context_line.split()
+        degrad_context_path = os.path.join(self.dataset_dir, line_content[0])
+        clean_context_path = os.path.join(self.dataset_dir, self.image_dir, line_content[0].split('/')[-1])
+        
+        # Load and preprocess context images
+        degrad_context_img = Image.open(degrad_context_path).convert('RGB')
+        clean_context_img = Image.open(clean_context_path).convert('RGB')
+        
+        # Convert to numpy for transform
+        degrad_context_np = np.array(degrad_context_img)
+        clean_context_np = np.array(clean_context_img)
+        
+        # Apply CLIP transform
+        degrad_context = self.context_transform(degrad_context_np)
+        clean_context = self.context_transform(clean_context_np)
+        
+        return degrad_context, clean_context
+
 
     def __getitem__(self, index):
         index = index % self.length
@@ -48,13 +88,20 @@ class YoloDataset(Dataset):
                 image, box, clearimg = self.get_random_data(self.annotation_lines[index], self.input_shape, random=self.train)
         else:
             image, box, clearimg = self.get_random_data(self.annotation_lines[index], self.input_shape, random=self.train)
+        
         image = np.transpose(preprocess_input(np.array(image, dtype=np.float32)), (2, 0, 1))
         box = np.array(box, dtype=np.float32)
         clearimg = np.transpose(preprocess_input(np.array(clearimg, dtype=np.float32)), (2, 0, 1))
+        
         if len(box) != 0:
             box[:, 2:4] = box[:, 2:4] - box[:, 0:2]
             box[:, 0:2] = box[:, 0:2] + box[:, 2:4] / 2
-        return image, box, clearimg
+        
+        if self.use_dce:
+            degrad_context, clean_context = self._get_context_pair(self.annotation_lines[index])
+            return image, box, clearimg, degrad_context, clean_context
+        else:
+            return image, box, clearimg
 
     def rand(self, a=0, b=1):
         return np.random.rand() * (b - a) + a
@@ -325,10 +372,25 @@ def yolo_dataset_collate(batch):
     images = []
     bboxes = []
     clearimg = []
-    for img, box, clear in batch:
-        images.append(img)
-        bboxes.append(box)
-        clearimg.append(clear)
+    degrad_contexts = []
+    clean_contexts = []
+    
+    has_context = len(batch[0]) == 5  # Check if context pairs are present
+    
+    for item in batch:
+        images.append(item[0])
+        bboxes.append(item[1])
+        clearimg.append(item[2])
+        if has_context:
+            degrad_contexts.append(item[3])
+            clean_contexts.append(item[4])
+    
     images = np.array(images)
     clearimg = np.array(clearimg)
-    return images, bboxes, clearimg
+    
+    if has_context:
+        degrad_contexts = torch.stack(degrad_contexts, dim=0)
+        clean_contexts = torch.stack(clean_contexts, dim=0)
+        return images, bboxes, clearimg, degrad_contexts, clean_contexts
+    else:
+        return images, bboxes, clearimg

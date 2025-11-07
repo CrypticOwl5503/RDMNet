@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
     class_names, num_classes = get_classes(classes_path)
 
-    model = YoloBody(num_classes, phi)
+    model = YoloBody(num_classes, phi, use_dce=True)
     weights_init(model)
     if model_path != '':
         print('Load weights {}.'.format(model_path))
@@ -121,8 +121,8 @@ if __name__ == "__main__":
     if epoch_step == 0 or epoch_step_val == 0:
         raise ValueError("Dataset error!")
 
-    train_dataset = YoloDataset(dataset_dir, train_lines, input_shape, num_classes, epoch_length=UnFreeze_Epoch, mosaic=mosaic, train=True)
-    val_dataset = YoloDataset(dataset_dir, val_lines, input_shape, num_classes, epoch_length=UnFreeze_Epoch, mosaic=False, train=False)
+    train_dataset = YoloDataset(dataset_dir, train_lines, input_shape, num_classes, epoch_length=UnFreeze_Epoch, mosaic=mosaic, train=True, use_dce=True)
+    val_dataset = YoloDataset(dataset_dir, val_lines, input_shape, num_classes, epoch_length=UnFreeze_Epoch, mosaic=False, train=False, use_dce=True)
     gen = DataLoader(train_dataset, shuffle=True, batch_size=batch_size, num_workers=num_workers, pin_memory=True,
                      drop_last=True, collate_fn=yolo_dataset_collate)
     gen_val = DataLoader(val_dataset, shuffle=True, batch_size=batch_size, num_workers=num_workers, pin_memory=True,

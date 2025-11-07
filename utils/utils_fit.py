@@ -32,8 +32,6 @@ def augment(inp_img):
 def fit_one_epoch(model_train, model, yolo_loss, loss_history, optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val, Epoch, cuda, save_period):
     Det_loss = 0
     val_loss = 0
-    # Dehazy_loss = 0
-    # Contrs_loss = 0
     criterion_l1 = nn.L1Loss().cuda()
     contrast_loss = nn.CrossEntropyLoss().cuda()
     wgt = [1.0, 0.9, 0.8, 0.7, 0.6]
@@ -44,27 +42,35 @@ def fit_one_epoch(model_train, model, yolo_loss, loss_history, optimizer, epoch,
             if iteration >= epoch_step:
                 break
 
-            images, targets, clearimgs = batch[0], batch[1], batch[2]
+            # Handle both with and without context pairs
+            if len(batch) == 5:
+                images, targets, clearimgs, degrad_contexts, clean_contexts = batch[0], batch[1], batch[2], batch[3], batch[4]
+                context_pairs = (degrad_contexts, clean_contexts)
+            else:
+                images, targets, clearimgs = batch[0], batch[1], batch[2]
+                context_pairs = None
+            
             with torch.no_grad():
                 images = torch.from_numpy(images).type(torch.FloatTensor).cuda()
                 targets = [torch.from_numpy(ann).type(torch.FloatTensor).cuda() for ann in targets]
                 clearimgs = torch.from_numpy(clearimgs).type(torch.FloatTensor).cuda()
+                
+                if context_pairs is not None:
+                    # Context pairs are already tensors from collate_fn
+                    degrad_contexts = degrad_contexts.cuda()
+                    clean_contexts = clean_contexts.cuda()
+                    context_pairs = (degrad_contexts, clean_contexts)
+                
                 posimgs = augment(images)
                 hazy_and_clear = torch.cat([images, posimgs], dim=0).cuda()
 
             optimizer.zero_grad()
 
-            # outputs         = model_train(images)
-            detected, restored, logits, labels = model_train(hazy_and_clear)
+            # Pass context_pairs to model
+            detected, restored, logits, labels = model_train(hazy_and_clear, context_pairs=context_pairs)
 
             loss_det = yolo_loss(detected, targets)
-            # for l in range(len(outputs) - 1):
-            #     loss_item = yolo_loss(outputs[l], targets)
-            #     loss_value_all  += loss_item
             loss_l1 = criterion_l1(restored, clearimgs)
-            # save_image(restored[0], './results/dehazing.png')
-            # save_image(clearimgs[0], './results/clean.png')
-            # save_image(images[0], './results/hazy.png')
             loss_contrs = contrast_loss(logits, labels)
             total_loss = 0.2 * loss_det + wgt[epoch // 20] * loss_l1 + 0.1 * loss_contrs
 
@@ -72,8 +78,6 @@ def fit_one_epoch(model_train, model, yolo_loss, loss_history, optimizer, epoch,
             optimizer.step()
 
             Det_loss += loss_det.item()
-            # Dehazy_loss += loss_l1.item()
-            # Contrs_loss += loss_contrs.item()
 
             pbar.set_postfix(**{'loss_det': f'{loss_det:.2f}',
                                 'loss_l1': f'{loss_l1:.2f}',
@@ -81,29 +85,31 @@ def fit_one_epoch(model_train, model, yolo_loss, loss_history, optimizer, epoch,
                                 'lr': get_lr(optimizer)})
             pbar.update(1)
 
-    # print('Finish Train')
-
     model_train.eval()
     print('Start Validation')
     with tqdm(total=epoch_step_val, desc=f'Epoch {epoch + 1}/{Epoch}', postfix=dict, mininterval=0.3) as pbar:
         for iteration, batch in enumerate(gen_val):
             if iteration >= epoch_step_val:
                 break
-            images, targets = batch[0], batch[1]
+            
+            # Handle validation batch
+            if len(batch) == 5:
+                images, targets = batch[0], batch[1]
+                degrad_contexts, clean_contexts = batch[3], batch[4]
+                context_pairs = (degrad_contexts.cuda(), clean_contexts.cuda())
+            else:
+                images, targets = batch[0], batch[1]
+                context_pairs = None
+                
             with torch.no_grad():
-
                 images = torch.from_numpy(images).type(torch.FloatTensor).cuda()
                 targets = [torch.from_numpy(ann).type(torch.FloatTensor).cuda() for ann in targets]
 
                 optimizer.zero_grad()
 
-                detected, restored = model_train(images)
+                detected, restored = model_train(images, context_pairs=context_pairs)
 
                 det_loss = yolo_loss(detected, targets)
-                # for l in range(len(outputs)-1):
-                #     loss_item = yolo_loss(outputs[l], targets)
-                #     loss_value_all  += loss_item
-                # det_loss = loss_value_all
 
             val_loss += det_loss.item()
             pbar.set_postfix(**{'val_loss': val_loss / (iteration + 1)})
