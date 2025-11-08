@@ -6,12 +6,15 @@ import cv2
 import numpy as np
 from PIL import Image
 from torch.utils.data.dataset import Dataset
+from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
+import torchvision.transforms.functional as F
+import torch
 
 from utils.utils import cvtColor, preprocess_input
 
 
 class YoloDataset(Dataset):
-    def __init__(self, dataset_dir, annotation_lines, input_shape, num_classes, epoch_length, mosaic, train, mosaic_ratio=0.7):
+    def __init__(self, dataset_dir, annotation_lines, input_shape, num_classes, epoch_length, mosaic, train, mosaic_ratio=0.7, use_dce=False):
         super(YoloDataset, self).__init__()
         self.dataset_dir = dataset_dir
         self.annotation_lines = annotation_lines
@@ -21,6 +24,7 @@ class YoloDataset(Dataset):
         self.mosaic = mosaic
         self.train = train
         self.mosaic_ratio = mosaic_ratio
+        self.use_dce = use_dce
 
         self.image_dir = 'VOC_Clean/train/CleanImages' if self.train else 'VOC_Clean/test/CleanImages'
 
@@ -28,9 +32,41 @@ class YoloDataset(Dataset):
 
         self.epoch_now = -1
         self.length = len(self.annotation_lines)
+        
+        # CLIP preprocessing transform (only if use_dce is True)
+        if self.use_dce:
+            self.clip_transform = Compose([
+                Resize(224, interpolation=Image.BICUBIC),
+                CenterCrop(224),
+                ToTensor(),
+                Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+            ])
 
     def __len__(self):
         return self.length
+    
+    def _get_context_pair(self, current_index):
+        """
+        Get a context pair (degraded and clean) from the dataset.
+        Selects a random different sample from the same dataset.
+        
+        Args:
+            current_index: Current sample index (to avoid selecting the same sample)
+        
+        Returns:
+            (degrad_context_path, clean_context_path): Paths to context images
+        """
+        # Select a random different index
+        context_index = current_index
+        while context_index == current_index:
+            context_index = np.random.randint(0, self.length)
+        
+        # Get the context annotation line
+        context_line = self.annotation_lines[context_index].split()
+        context_image_path = os.path.join(self.dataset_dir, context_line[0])
+        context_clean_path = os.path.join(self.dataset_dir, self.image_dir, context_image_path.split('/')[-1])
+        
+        return context_image_path, context_clean_path
 
     def __getitem__(self, index):
         index = index % self.length
@@ -48,13 +84,37 @@ class YoloDataset(Dataset):
                 image, box, clearimg = self.get_random_data(self.annotation_lines[index], self.input_shape, random=self.train)
         else:
             image, box, clearimg = self.get_random_data(self.annotation_lines[index], self.input_shape, random=self.train)
+        
         image = np.transpose(preprocess_input(np.array(image, dtype=np.float32)), (2, 0, 1))
         box = np.array(box, dtype=np.float32)
         clearimg = np.transpose(preprocess_input(np.array(clearimg, dtype=np.float32)), (2, 0, 1))
+        
         if len(box) != 0:
             box[:, 2:4] = box[:, 2:4] - box[:, 0:2]
             box[:, 0:2] = box[:, 0:2] + box[:, 2:4] / 2
-        return image, box, clearimg
+        
+        # Get context pairs if DCE is enabled
+        if self.use_dce:
+            degrad_context_path, clean_context_path = self._get_context_pair(index)
+            
+            # Load and preprocess context images for CLIP
+            try:
+                degrad_context_img = Image.open(degrad_context_path).convert('RGB')
+                clean_context_img = Image.open(clean_context_path).convert('RGB')
+                
+                # Apply CLIP preprocessing: resize to 224x224 and normalize
+                degrad_context = self.clip_transform(degrad_context_img)
+                clean_context = self.clip_transform(clean_context_img)
+            except Exception as e:
+                # If context loading fails, create dummy tensors
+                print(f"Warning: Failed to load context images: {e}")
+                degrad_context = torch.zeros(3, 224, 224)
+                clean_context = torch.zeros(3, 224, 224)
+            
+            return image, box, clearimg, degrad_context, clean_context
+        else:
+            # Original return format (backward compatible)
+            return image, box, clearimg
 
     def rand(self, a=0, b=1):
         return np.random.rand() * (b - a) + a
@@ -322,13 +382,42 @@ class YoloDataset(Dataset):
 
 
 def yolo_dataset_collate(batch):
-    images = []
-    bboxes = []
-    clearimg = []
-    for img, box, clear in batch:
-        images.append(img)
-        bboxes.append(box)
-        clearimg.append(clear)
-    images = np.array(images)
-    clearimg = np.array(clearimg)
-    return images, bboxes, clearimg
+    """
+    Collate function for YoloDataset.
+    Handles both with and without context pairs (backward compatible).
+    """
+    # Check if context pairs are included (first sample has 5 elements)
+    if len(batch[0]) == 5:
+        # With context pairs
+        images = []
+        bboxes = []
+        clearimg = []
+        degrad_contexts = []
+        clean_contexts = []
+        
+        for item in batch:
+            img, box, clear, degrad_ctx, clean_ctx = item
+            images.append(img)
+            bboxes.append(box)
+            clearimg.append(clear)
+            degrad_contexts.append(degrad_ctx)
+            clean_contexts.append(clean_ctx)
+        
+        images = np.array(images)
+        clearimg = np.array(clearimg)
+        degrad_contexts = torch.stack(degrad_contexts)  # Stack tensors
+        clean_contexts = torch.stack(clean_contexts)     # Stack tensors
+        
+        return images, bboxes, clearimg, degrad_contexts, clean_contexts
+    else:
+        # Without context pairs (original format)
+        images = []
+        bboxes = []
+        clearimg = []
+        for img, box, clear in batch:
+            images.append(img)
+            bboxes.append(box)
+            clearimg.append(clear)
+        images = np.array(images)
+        clearimg = np.array(clearimg)
+        return images, bboxes, clearimg
