@@ -30,6 +30,9 @@ if __name__ == "__main__":
     input_shape = [640, 640]
     phi = 's'
     mosaic = False
+    
+    # Add DCE flag
+    use_dce = True  # Set to True to enable DCE, False for original behavior
 
     Init_Epoch = 0
     Freeze_Epoch = 0
@@ -55,7 +58,8 @@ if __name__ == "__main__":
 
     class_names, num_classes = get_classes(classes_path)
 
-    model = YoloBody(num_classes, phi)
+    # Pass use_dce to YoloBody
+    model = YoloBody(num_classes, phi, use_dce=use_dce)
     weights_init(model)
     if model_path != '':
         print('Load weights {}.'.format(model_path))
@@ -121,8 +125,11 @@ if __name__ == "__main__":
     if epoch_step == 0 or epoch_step_val == 0:
         raise ValueError("Dataset error!")
 
-    train_dataset = YoloDataset(dataset_dir, train_lines, input_shape, num_classes, epoch_length=UnFreeze_Epoch, mosaic=mosaic, train=True)
-    val_dataset = YoloDataset(dataset_dir, val_lines, input_shape, num_classes, epoch_length=UnFreeze_Epoch, mosaic=False, train=False)
+    # Create datasets with use_dce flag
+    train_dataset = YoloDataset(dataset_dir, train_lines, input_shape, num_classes, 
+                               epoch_length=UnFreeze_Epoch, mosaic=mosaic, train=True, use_dce=use_dce)
+    val_dataset = YoloDataset(dataset_dir, val_lines, input_shape, num_classes, 
+                             epoch_length=UnFreeze_Epoch, mosaic=False, train=False, use_dce=use_dce)
     gen = DataLoader(train_dataset, shuffle=True, batch_size=batch_size, num_workers=num_workers, pin_memory=True,
                      drop_last=True, collate_fn=yolo_dataset_collate)
     gen_val = DataLoader(val_dataset, shuffle=True, batch_size=batch_size, num_workers=num_workers, pin_memory=True,
