@@ -13,7 +13,7 @@ from utils.utils import cvtColor, preprocess_input
 
 
 class YoloDataset(Dataset):
-    def __init__(self, dataset_dir, annotation_lines, input_shape, num_classes, epoch_length, mosaic, train, mosaic_ratio=0.7):
+    def __init__(self, dataset_dir, annotation_lines, input_shape, num_classes, epoch_length, mosaic, train, mosaic_ratio=0.7, use_dce=False):
         super(YoloDataset, self).__init__()
         self.dataset_dir = dataset_dir
         self.annotation_lines = annotation_lines
@@ -23,7 +23,7 @@ class YoloDataset(Dataset):
         self.mosaic = mosaic
         self.train = train
         self.mosaic_ratio = mosaic_ratio
-        self.use_dc = use_dc
+        self.use_dce = use_dce  # Fixed: was self.use_dc = use_dc
 
         self.image_dir = 'VOC_Clean/train/CleanImages' if self.train else 'VOC_Clean/test/CleanImages'
 
