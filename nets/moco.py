@@ -106,24 +106,25 @@ class MoCo(nn.Module):
 
         return x_gather[idx_this]
 
-    def forward(self, im_q, im_k=None):
+    def forward(self, im_q, im_k=None, context_images=None):
         """
         Input:
             im_q: a batch of query images
             im_k: a batch of key images
+            context_images: optional context pairs for DCE
         Output:
             logits, targets
         """
         if self.training:
             # compute query features
-            q, inter = self.encoder_q(im_q)  # queries: NxC
+            q, inter = self.encoder_q(im_q, context_images=context_images)  # queries: NxC
             q = nn.functional.normalize(q, dim=1)
 
             # compute key features
             with torch.no_grad():  # no gradient to keys
                 self._momentum_update_key_encoder()  # update the key encoder
 
-                k, _ = self.encoder_k(im_k)  # keys: NxC
+                k, _ = self.encoder_k(im_k, context_images=context_images)  # keys: NxC
                 k = nn.functional.normalize(k, dim=1)
 
             # compute logits
@@ -148,7 +149,7 @@ class MoCo(nn.Module):
 
             return logits, labels, inter
         else:
-            _, inter = self.encoder_q(im_q)
+            _, inter = self.encoder_q(im_q, context_images=context_images)
 
             return inter
 
