@@ -130,15 +130,25 @@ class DCEModulatedResBlock(nn.Module):
         dce_flat = dce_output.reshape(B, -1)  # B x (2L * C^l)
         dce_features = self.dce_ffnn(dce_flat)  # B x C2
         
-        # 2. C2 separate CNNs on x: n x n x C2 -> C2
-        spatial_features = []
-        for i in range(self.out_feat):
+        # 2. C2 separate CNNs on x: n x n x C_in -> C2
+        # First, we need to process all input channels to get C2 outputs
+        # Use a single CNN that processes all channels and outputs C2 scalars
+        B, C_in, H, W = x.shape
+        
+        # Process each input channel through a CNN and aggregate
+        channel_features = []
+        for i in range(min(C_in, self.out_feat)):
             # Extract single channel
             channel_feat = x[:, i:i+1, :, :]  # B x 1 x H x W
             # Process through CNN
             channel_scalar = self.channel_cnns[i](channel_feat)  # B x 1
-            spatial_features.append(channel_scalar)
-        spatial_features = torch.cat(spatial_features, dim=1)  # B x C2
+            channel_features.append(channel_scalar)
+        
+        # If we have fewer input channels than output channels, pad with zeros
+        while len(channel_features) < self.out_feat:
+            channel_features.append(torch.zeros(B, 1, device=x.device))
+        
+        spatial_features = torch.cat(channel_features, dim=1)  # B x C2
         
         # 3. Multiply: C2 * C2 -> C2
         multiplied = dce_features * spatial_features  # B x C2
@@ -284,7 +294,7 @@ class UDE(nn.Module):
     def forward(self, x_query, x_key=None, context_pairs=None):
         if self.training:
             # degradation-aware representation learning
-            logits, labels, inter = self.moco(x_query, x_key, context_pairs)
+            logits, labels, inter = self.moco(x_query, x_key, context_pairs=context_pairs)
             return logits, labels, inter
         else:
             # degradation-aware representation learning

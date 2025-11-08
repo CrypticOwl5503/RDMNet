@@ -3,7 +3,7 @@ from torchvision.transforms import Compose, ToPILImage, Resize, CenterCrop, ToTe
 import random
 from random import sample, shuffle
 from turtle import clear
-
+import torch
 import cv2
 import numpy as np
 from PIL import Image
@@ -31,6 +31,13 @@ class YoloDataset(Dataset):
 
         self.epoch_now = -1
         self.length = len(self.annotation_lines)
+        
+        # Initialize clearimage_lines for mosaic augmentation
+        if self.train:
+            self.clearimage_lines = [line.replace('HazyImages', 'CleanImages').replace('RainyImages', 'CleanImages').replace('SnowyImages', 'CleanImages') 
+                                   for line in self.annotation_lines]
+        else:
+            self.clearimage_lines = self.annotation_lines
 
         # CLIP preprocessing transform for context images
         if self.use_dce:
