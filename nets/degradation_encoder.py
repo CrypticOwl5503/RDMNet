@@ -2,6 +2,68 @@ from torch import nn
 from nets.moco import MoCo
 import clip
 import torch
+import torch.nn.functional as F
+
+
+class DCEBlock(nn.Module):
+    """
+    Degradation Context Extraction Block.
+    Implements: Proj -> GELU -> LayerNorm -> Multi-Head Self-Attention
+    
+    Input: B x 2L x context_dim (CLIP features: 768)
+    Output: B x 2L x output_dim (C^l for each ResBlock level)
+    """
+    def __init__(self, context_dim=768, output_dim=32, num_heads=8):
+        super(DCEBlock, self).__init__()
+        self.context_dim = context_dim
+        self.output_dim = output_dim
+        
+        # Projection: context_dim -> output_dim
+        self.proj = nn.Linear(context_dim, output_dim, bias=False)
+        
+        # Multi-Head Self-Attention
+        # Using PyTorch's built-in MultiheadAttention
+        # Note: PyTorch expects (seq_len, batch, embed_dim) format
+        self.mhsa = nn.MultiheadAttention(
+            embed_dim=output_dim,
+            num_heads=num_heads,
+            batch_first=False  # We'll handle transpose manually
+        )
+        
+        # Layer Normalization (applied before MHSA)
+        self.ln = nn.LayerNorm(output_dim)
+    
+    def forward(self, x):
+        """
+        Forward pass.
+        
+        Args:
+            x: Input features (B x 2L x context_dim)
+        
+        Returns:
+            out: DCE output (B x 2L x output_dim)
+        """
+        # Proj: B x 2L x context_dim -> B x 2L x output_dim
+        x = self.proj(x)
+        
+        # GELU activation
+        x = F.gelu(x)
+        
+        # Layer Normalization
+        x = self.ln(x)
+        
+        # Multi-Head Self-Attention
+        # PyTorch MultiheadAttention expects (seq_len, batch, embed_dim)
+        # So we transpose: B x 2L x output_dim -> 2L x B x output_dim
+        x_transposed = x.transpose(0, 1)  # (2L, B, output_dim)
+        
+        # Self-attention: query, key, value are all the same
+        attn_out, _ = self.mhsa(x_transposed, x_transposed, x_transposed)
+        
+        # Transpose back: 2L x B x output_dim -> B x 2L x output_dim
+        out = attn_out.transpose(0, 1)
+        
+        return out
 
 
 class ResBlock(nn.Module):
@@ -154,3 +216,172 @@ class UDE(nn.Module):
             # degradation-aware represenetion learning
             inter = self.moco(x_query, context_images=context_images)
             return inter
+
+
+class DCEModulatedResBlock(nn.Module):
+    """
+    ResBlock with DCE-based channel-wise modulation.
+    
+    Architecture:
+    1. FFNN on DCE: 2L × C1 -> C2
+    2. C2 CNNs on x: n × n × C2 -> C2 (one CNN per channel)
+    3. Multiply: C2 × C2 -> C2
+    4. FFNN shrink: C2 -> C2/2
+    5. FFNN expand: C2/2 -> C2
+    6. Channel-wise multiply: (n × n × C2) ⊙ C2 -> n × n × C2
+    7. Pass to ResBlock
+    """
+    def __init__(self, in_feat, out_feat, stride=1, dce_dim=None, dce_seq_len=100):
+        """
+        Args:
+            in_feat: Input channels
+            out_feat: Output channels (C2)
+            stride: Stride for ResBlock
+            dce_dim: DCE output dimension (C1), if None, modulation is disabled
+            dce_seq_len: Sequence length of DCE output (2L, default 100)
+        """
+        super(DCEModulatedResBlock, self).__init__()
+        self.out_feat = out_feat
+        self.use_dce = (dce_dim is not None)
+        
+        # Original ResBlock
+        self.resblock = ResBlock(in_feat, out_feat, stride)
+        
+        if self.use_dce:
+            # 1. FFNN on DCE: reduce sequence dimension and project to C2
+            # Input: B × 2L × C1, we want to get C2 scalars
+            # Strategy: mean pool over sequence, then project
+            self.dce_pool = nn.AdaptiveAvgPool1d(1)  # Reduces 2L dimension
+            self.dce_proj = nn.Linear(dce_dim, out_feat)  # C1 -> C2
+            
+            # 2. C2 separate CNNs: one per channel
+            # Each CNN takes one channel and outputs a scalar
+            self.channel_cnns = nn.ModuleList([
+                nn.Sequential(
+                    nn.Conv2d(1, 1, kernel_size=3, padding=1, bias=False),
+                    nn.AdaptiveAvgPool2d(1),  # n × n -> 1 × 1
+                    nn.Flatten()  # -> scalar
+                ) for _ in range(out_feat)
+            ])
+            
+            # 3. Multiply (element-wise, handled in forward)
+            
+            # 4. FFNN shrink: C2 -> C2/2
+            self.shrink = nn.Sequential(
+                nn.Linear(out_feat, out_feat // 2),
+                nn.ReLU(inplace=True)
+            )
+            
+            # 5. FFNN expand: C2/2 -> C2
+            self.expand = nn.Sequential(
+                nn.Linear(out_feat // 2, out_feat),
+                nn.Sigmoid()  # Use sigmoid to get modulation factors in [0, 1]
+            )
+    
+    def forward(self, x, dce_output=None):
+        """
+        Forward pass.
+        
+        Args:
+            x: Input features (B × C_in × n × n)
+            dce_output: Optional DCE output (B × 2L × C1)
+        
+        Returns:
+            Output of ResBlock (B × C2 × n × n)
+        """
+        if not self.use_dce or dce_output is None:
+            # No DCE modulation, use original ResBlock
+            return self.resblock(x)
+        
+        B, C_in, H, W = x.shape
+        C2 = self.out_feat
+        
+        # 1. Get C2 inputs from DCE: B × 2L × C1 -> B × C2
+        # Transpose for pooling: B × 2L × C1 -> B × C1 × 2L
+        dce_transposed = dce_output.transpose(1, 2)  # B × C1 × 2L
+        # Pool over sequence: B × C1 × 2L -> B × C1 × 1
+        dce_pooled = self.dce_pool(dce_transposed).squeeze(-1)  # B × C1
+        # Project to C2: B × C1 -> B × C2
+        dce_proj = self.dce_proj(dce_pooled)  # B × C2
+        
+        # 2. Get C2 inputs from spatial features: B × C2 × n × n -> B × C2
+        # Note: x might have C_in channels, but we need C2 channels
+        # We'll process the input channels, or if C_in == C2, use directly
+        if C_in == C2:
+            x_for_cnn = x
+        else:
+            # If channels don't match, we need to handle this
+            # For now, assume we process what we have
+            x_for_cnn = x
+        
+        # Apply C2 separate CNNs (one per output channel)
+        cnn_outputs = []
+        for i in range(C2):
+            if i < C_in:
+                # Extract channel i: B × 1 × n × n
+                channel_i = x_for_cnn[:, i:i+1, :, :]
+                # Apply CNN: B × 1 × n × n -> B × 1
+                cnn_out = self.channel_cnns[i](channel_i)
+                cnn_outputs.append(cnn_out)
+            else:
+                # If C2 > C_in, pad with zeros or use last channel
+                channel_i = x_for_cnn[:, -1:, :, :]
+                cnn_out = self.channel_cnns[i](channel_i)
+                cnn_outputs.append(cnn_out)
+        
+        # Stack: B × C2
+        spatial_proj = torch.cat(cnn_outputs, dim=1)  # B × C2
+        
+        # 3. Multiply: B × C2
+        multiplied = dce_proj * spatial_proj  # B × C2
+        
+        # 4. FFNN shrink: B × C2 -> B × C2/2
+        shrunk = self.shrink(multiplied)  # B × C2/2
+        
+        # 5. FFNN expand: B × C2/2 -> B × C2
+        modulation_factors = self.expand(shrunk)  # B × C2
+        
+        # 6. Channel-wise multiply: (B × C_in × n × n) ⊙ (B × C2 × 1 × 1)
+        # Reshape modulation_factors: B × C2 -> B × C2 × 1 × 1
+        modulation_factors = modulation_factors.view(B, C2, 1, 1)
+        
+        # If C_in != C2, we need to project x first
+        if C_in != C2:
+            # Use a simple 1x1 conv to match channels
+            if not hasattr(self, 'channel_proj'):
+                self.channel_proj = nn.Conv2d(C_in, C2, kernel_size=1, bias=False).to(x.device)
+            x_proj = self.channel_proj(x)
+        else:
+            x_proj = x
+        
+        # Channel-wise multiplication
+        modulated_x = x_proj * modulation_factors  # B × C2 × n × n
+        
+        # 7. Pass to ResBlock
+        # Note: ResBlock expects C_in input, but we have C2
+        # We need to handle this - either modify ResBlock input or use a projection
+        # For now, let's assume we pass modulated_x which has C2 channels
+        # But ResBlock expects in_feat channels...
+        # Actually, we should modulate the input to ResBlock, not replace it
+        # Let me reconsider: we modulate x, then pass to ResBlock
+        
+        # Actually, looking at the requirement again:
+        # "multiply with C2 channels of n x n of the original degradation encoder RB input"
+        # So we modulate the input, then pass to ResBlock
+        # But ResBlock needs in_feat channels, so we need to ensure compatibility
+        
+        # For now, let's create a wrapper that handles channel mismatch
+        if C_in == C2:
+            # Direct modulation
+            output = self.resblock(modulated_x)
+        else:
+            # Need to handle channel mismatch
+            # Option 1: Project modulated_x back to C_in
+            # Option 2: Create a ResBlock that accepts C2
+            # For simplicity, let's project back
+            if not hasattr(self, 'channel_proj_back'):
+                self.channel_proj_back = nn.Conv2d(C2, C_in, kernel_size=1, bias=False).to(x.device)
+            modulated_x_back = self.channel_proj_back(modulated_x)
+            output = self.resblock(modulated_x_back)
+        
+        return output
