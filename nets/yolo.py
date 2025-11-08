@@ -324,7 +324,7 @@ class YOLOPAFPN(nn.Module):
 
 
 class YoloBody(nn.Module):
-    def __init__(self, num_classes, phi):
+    def __init__(self, num_classes, phi, use_dce=False):
         super().__init__()
         depth_dict = {'nano': 0.33, 'tiny': 0.33, 's': 0.33, 'm': 0.67, 'l': 1.00, 'x': 1.33, }
         width_dict = {'nano': 0.25, 'tiny': 0.375, 's': 0.50, 'm': 0.75, 'l': 1.00, 'x': 1.25, }
@@ -333,7 +333,7 @@ class YoloBody(nn.Module):
         base_channels = int(width * 64)  # 32
 
         # degradation representations
-        self.UDE = UDE()
+        self.UDE = UDE(use_dce=use_dce)  # Pass use_dce to UDE
         # feature extraction and fusion
         self.encoder = Encoder(in_channels=3, n_feats=base_channels, reduction=8, relu=False)
         self.backbone = YOLOPAFPN(depth, width, base_channels=base_channels, depthwise=depthwise, relu=False)
@@ -342,13 +342,35 @@ class YoloBody(nn.Module):
         self.head = YOLOXHead(num_classes, width, depthwise=depthwise)
         self.decoder = Decoder(out_channel=3, n_feats=base_channels, reduction=8, relu=False)
 
-    def forward(self, x):
+    def forward(self, x, context_images=None):
+        """
+        Forward pass.
+        
+        Args:
+            x: Input images (B x 3 x H x W) or (2*B x 3 x H x W) if training
+            context_images: Optional tuple/list (degrad_context, clean_context)
+                          Each: B x 3 x 224 x 224 (CLIP-preprocessed)
+        
+        Returns:
+            (detected, restored, logits, labels) if training else (detected, restored)
+        """
         logits, labels = 0, 0
         if self.training:
             x, posimg = x.chunk(2, dim=0)  # split haze images, posimgs (Batchsize, Batchsize)
-            logits, labels, inter = self.UDE(x, posimg)
+            # If context_images provided, split them too (they're for the first half)
+            if context_images is not None:
+                degrad_ctx, clean_ctx = context_images
+                # context_images are for the original batch, not the doubled batch
+                # So we use them as-is for x (the degraded images)
+                logits, labels, inter = self.UDE(x, posimg, context_images=context_images)
+            else:
+                logits, labels, inter = self.UDE(x, posimg)
         else:
-            inter = self.UDE(x)
+            if context_images is not None:
+                inter = self.UDE(x, context_images=context_images)
+            else:
+                inter = self.UDE(x)
+        
         encoder_outs = self.encoder(x, inter)
         afpn_outs, res_feats = self.backbone(x, encoder_outs, inter)
         detected = self.head(afpn_outs)
