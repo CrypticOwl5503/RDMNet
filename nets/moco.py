@@ -27,6 +27,7 @@ class MoCo(nn.Module):
         self.encoder_q = base_encoder(use_dce=use_dce)
         self.encoder_k = base_encoder(use_dce=use_dce)
 
+        # Initialize parameters by copying
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data.copy_(param_q.data)  # initialize
             param_k.requires_grad = False  # not update by gradient
@@ -41,9 +42,23 @@ class MoCo(nn.Module):
     def _momentum_update_key_encoder(self):
         """
         Momentum update of the key encoder
+        Handles cases where parameters might have different shapes due to dynamic creation
         """
-        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
-            param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
+        param_q_dict = dict(self.encoder_q.named_parameters())
+        param_k_dict = dict(self.encoder_k.named_parameters())
+        
+        for name in param_q_dict:
+            if name in param_k_dict:
+                param_q = param_q_dict[name]
+                param_k = param_k_dict[name]
+                # Only update if shapes match
+                if param_q.shape == param_k.shape:
+                    param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
+                else:
+                    # If shapes don't match, copy directly
+                    # This handles dynamically created parameters
+                    if param_q.shape == param_k.shape or param_k.numel() == 0:
+                        param_k.data.copy_(param_q.data)
 
     @torch.no_grad()
     def _dequeue_and_enqueue(self, keys):
