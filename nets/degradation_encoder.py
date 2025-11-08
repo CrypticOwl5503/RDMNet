@@ -90,19 +90,6 @@ class ResEncoder(nn.Module):
         super(ResEncoder, self).__init__()
         self.use_dce = use_dce
         self.emb_in = nn.Conv2d(in_channel, n_feat, kernel_size=3, padding=1, bias=False)
-        self.E1 = ResBlock(in_feat=n_feat, out_feat=n_feat, stride=2)  # 320x320x32
-        self.E2 = ResBlock(in_feat=n_feat, out_feat=n_feat * 2, stride=2)  # 160x160x64
-        self.E3 = ResBlock(in_feat=n_feat * 2, out_feat=n_feat * 4, stride=2)  # 80x80
-        self.E4 = ResBlock(in_feat=n_feat * 4, out_feat=n_feat * 8, stride=2)  # 40x40
-        self.E5 = ResBlock(in_feat=n_feat * 8, out_feat=n_feat * 16, stride=2)  # 20x20
-
-        self.mlp = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(n_feat * 16, n_feat * 8),
-            nn.LeakyReLU(0.1, True),
-            nn.Linear(n_feat * 8, 256),
-        )
         
         # CLIP setup (only if use_dce is True)
         if self.use_dce:
@@ -115,6 +102,41 @@ class ResEncoder(nn.Module):
             self.target_layer = 'visual.transformer.resblocks.11.ln_2'
             self.intermediate_features = {}
             self._register_clip_hook()
+            
+            # DCE blocks for each ResBlock level
+            # Each DCE block processes CLIP features (B x 100 x 768) -> (B x 100 x C^l)
+            self.dce1 = DCEBlock(context_dim=768, output_dim=n_feat, num_heads=8)        # 32
+            self.dce2 = DCEBlock(context_dim=768, output_dim=n_feat * 2, num_heads=8)    # 64
+            self.dce3 = DCEBlock(context_dim=768, output_dim=n_feat * 4, num_heads=8)    # 128
+            self.dce4 = DCEBlock(context_dim=768, output_dim=n_feat * 8, num_heads=8)    # 256
+            self.dce5 = DCEBlock(context_dim=768, output_dim=n_feat * 16, num_heads=8)  # 512
+            
+            # Replace ResBlocks with DCEModulatedResBlocks
+            self.E1 = DCEModulatedResBlock(in_feat=n_feat, out_feat=n_feat, stride=2, 
+                                          dce_dim=n_feat, dce_seq_len=100)  # 320x320x32
+            self.E2 = DCEModulatedResBlock(in_feat=n_feat, out_feat=n_feat * 2, stride=2,
+                                          dce_dim=n_feat * 2, dce_seq_len=100)  # 160x160x64
+            self.E3 = DCEModulatedResBlock(in_feat=n_feat * 2, out_feat=n_feat * 4, stride=2,
+                                          dce_dim=n_feat * 4, dce_seq_len=100)  # 80x80x128
+            self.E4 = DCEModulatedResBlock(in_feat=n_feat * 4, out_feat=n_feat * 8, stride=2,
+                                          dce_dim=n_feat * 8, dce_seq_len=100)  # 40x40x256
+            self.E5 = DCEModulatedResBlock(in_feat=n_feat * 8, out_feat=n_feat * 16, stride=2,
+                                          dce_dim=n_feat * 16, dce_seq_len=100)  # 20x20x512
+        else:
+            # Original ResBlocks (backward compatibility)
+            self.E1 = ResBlock(in_feat=n_feat, out_feat=n_feat, stride=2)  # 320x320x32
+            self.E2 = ResBlock(in_feat=n_feat, out_feat=n_feat * 2, stride=2)  # 160x160x64
+            self.E3 = ResBlock(in_feat=n_feat * 2, out_feat=n_feat * 4, stride=2)  # 80x80
+            self.E4 = ResBlock(in_feat=n_feat * 4, out_feat=n_feat * 8, stride=2)  # 40x40
+            self.E5 = ResBlock(in_feat=n_feat * 8, out_feat=n_feat * 16, stride=2)  # 20x20
+
+        self.mlp = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(n_feat * 16, n_feat * 8),
+            nn.LeakyReLU(0.1, True),
+            nn.Linear(n_feat * 8, 256),
+        )
 
     def _register_clip_hook(self):
         """Register forward hook on CLIP to extract intermediate features"""
@@ -152,21 +174,14 @@ class ResEncoder(nn.Module):
             clean_features = self.intermediate_features[self.target_layer].clone()
         
         # CLIP intermediate features are in [L, B, C] format, transpose to [B, L, C]
-        # degrad_features shape: [50, B, 768] -> [B, 50, 768]
         degrad_features = degrad_features.transpose(0, 1)
         clean_features = clean_features.transpose(0, 1)
-        
-        # Debug: print shapes
-        print(f"Debug - degrad_features shape after transpose: {degrad_features.shape}")
-        print(f"Debug - clean_features shape after transpose: {clean_features.shape}")
         
         # Ensure both have the same batch size
         assert degrad_features.shape[0] == B, f"Expected batch size {B}, got {degrad_features.shape[0]}"
         assert clean_features.shape[0] == B, f"Expected batch size {B}, got {clean_features.shape[0]}"
         
         # Concatenate along sequence dimension: B x 100 x 768
-        # degrad_features: B x 50 x 768, clean_features: B x 50 x 768
-        # combined: B x 100 x 768
         combined_features = torch.cat([degrad_features, clean_features], dim=1)
         
         return combined_features
@@ -184,18 +199,38 @@ class ResEncoder(nn.Module):
             out: Encoded features (B x 256)
             (l1, l2, l3, l4, l5): Intermediate feature maps
         """
-        # Extract CLIP features if DCE is enabled and context is provided
-        dce_features = None
+        # Extract CLIP features and process through DCE blocks if DCE is enabled
+        dce_outputs = None
         if self.use_dce and context_images is not None:
-            dce_features = self._extract_clip_features(context_images)
-            # dce_features shape: B x 100 x 768
+            # Extract CLIP features: B x 100 x 768
+            clip_features = self._extract_clip_features(context_images)
+            
+            # Process through DCE blocks to get DCE outputs for each level
+            dce_outputs = {
+                'dce1': self.dce1(clip_features),  # B x 100 x 32
+                'dce2': self.dce2(clip_features),   # B x 100 x 64
+                'dce3': self.dce3(clip_features),   # B x 100 x 128
+                'dce4': self.dce4(clip_features),   # B x 100 x 256
+                'dce5': self.dce5(clip_features),    # B x 100 x 512
+            }
         
         emb = self.emb_in(x)
-        l1 = self.E1(emb)
-        l2 = self.E2(l1)
-        l3 = self.E3(l2)
-        l4 = self.E4(l3)
-        l5 = self.E5(l4)
+        
+        # Forward through ResBlocks with DCE modulation
+        if self.use_dce and dce_outputs is not None:
+            l1 = self.E1(emb, dce_output=dce_outputs['dce1'])
+            l2 = self.E2(l1, dce_output=dce_outputs['dce2'])
+            l3 = self.E3(l2, dce_output=dce_outputs['dce3'])
+            l4 = self.E4(l3, dce_output=dce_outputs['dce4'])
+            l5 = self.E5(l4, dce_output=dce_outputs['dce5'])
+        else:
+            # No DCE, use original behavior
+            l1 = self.E1(emb)
+            l2 = self.E2(l1)
+            l3 = self.E3(l2)
+            l4 = self.E4(l3)
+            l5 = self.E5(l4)
+        
         out = self.mlp(l5)
 
         return out, (l1, l2, l3, l4, l5)
