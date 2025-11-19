@@ -18,9 +18,9 @@ if __name__ == "__main__":
 
     map_vis = False
 
-    text_path = r"./Datasets/VOC_Snow/ImageSets/Main/test.txt"
-    degrade_dir = r"./Datasets/VOC_Snow/test/SnowyImages"
-    annotation_dir = r"./Datasets/VOC_Snow/test/Annotations"
+    text_path = r"/content/Datasets(2)/VOC_Snow/ImageSets/Main/test.txt"
+    degrade_dir = r"/content/Datasets(2)/VOC_Snow/test/SnowyImages"
+    annotation_dir = r"/content/Datasets(2)/VOC_Snow/test/Annotations"
     image_suffix = '.jpg'
     map_out_path = 'map_out/VOC_Snow'
 
