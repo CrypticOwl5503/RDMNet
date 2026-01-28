@@ -23,9 +23,9 @@ if __name__ == "__main__":
     # model_path = ''  # No pretrained weights
     dataset_dir = r'/content/Datasets(2)'
 
-    weather = 'Snow'  # Snow, Rain, Haze, Mixed
+    weather = 'Mixed'  # Snow, Rain, Haze, Mixed
     train_annotation_path = f'/content/RDMNet/Datasets/train_{weather}.txt'
-    val_annotation_path = f'/content/RDMNet/Datasets/test_{weather}.txt'
+    val_annotation_path = f'/content/RDMNet/Datasets/test_Snow.txt'
 
     input_shape = [640, 640]
     phi = 's'
@@ -38,7 +38,7 @@ if __name__ == "__main__":
     Freeze_Epoch = 0
     Freeze_batch_size = 16
 
-    UnFreeze_Epoch = 50
+    UnFreeze_Epoch = 100
     Unfreeze_batch_size = 12
 
     Freeze_Train = False

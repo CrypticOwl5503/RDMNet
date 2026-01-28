@@ -13,5 +13,5 @@ requests==2.31.0
 seaborn==0.12.2
 ftfy
 regex
-clip-by-openai
+git+https://github.com/openai/CLIP.gitp
 einops

@@ -28,13 +28,21 @@ class YoloDataset(Dataset):
 
         self.image_dir = 'VOC_Clean/train/CleanImages' if self.train else 'VOC_Clean/test/CleanImages'
 
-        # self.dataset_dict = {"Haze": "HazyImages", "Rain": "RainyImages", "Snow": "SnowyImages"}
-
         self.epoch_now = -1
         self.length = len(self.annotation_lines)
-        
-        # CLIP preprocessing transform (only if use_dce is True)
+
         if self.use_dce:
+            # Organize annotations by degradation type
+            self.annotations_by_category = {"Haze": [], "Rain": [], "Snow": []}
+            for line in self.annotation_lines:
+                if "HazyImages" in line:
+                    self.annotations_by_category["Haze"].append(line)
+                elif "RainyImages" in line:
+                    self.annotations_by_category["Rain"].append(line)
+                elif "SnowyImages" in line:
+                    self.annotations_by_category["Snow"].append(line)
+
+            # CLIP preprocessing transform
             self.clip_transform = Compose([
                 Resize(224, interpolation=Image.BICUBIC),
                 CenterCrop(224),
@@ -45,45 +53,53 @@ class YoloDataset(Dataset):
     def __len__(self):
         return self.length
     
-    def _get_context_pair(self, current_index):
+    def _get_context_pair(self, current_line):
         """
-        Get a context pair (degraded and clean) from the dataset.
-        Selects a random different sample from the same dataset.
+        Get a context pair (degraded and clean) from the same degradation category.
         
         Args:
-            current_index: Current sample index (to avoid selecting the same sample)
+            current_line: The annotation line for the current sample.
         
         Returns:
-            (degrad_context_path, clean_context_path): Paths to context images
+            (degrad_context_path, clean_context_path): Paths to context images.
         """
-        # Select a random different index
-        context_index = current_index
-        while context_index == current_index:
+        # Determine the category of the current image
+        category = None
+        if "HazyImages" in current_line:
+            category = "Haze"
+        elif "RainyImages" in current_line:
+            category = "Rain"
+        elif "SnowyImages" in current_line:
+            category = "Snow"
+
+        if category and self.annotations_by_category[category]:
+            # Select a random context from the same category
+            context_line_str = sample(self.annotations_by_category[category], 1)[0]
+        else:
+            # Fallback for clean images or other types: select any random context
             context_index = np.random.randint(0, self.length)
-        
-        # Get the context annotation line
-        context_line = self.annotation_lines[context_index].split()
-        context_image_path = os.path.join(self.dataset_dir, context_line[0])
-        context_clean_path = os.path.join(self.dataset_dir, self.image_dir, context_image_path.split('/')[-1])
+            context_line_str = self.annotation_lines[context_index]
+
+        context_line_parts = context_line_str.split()
+        context_image_path = os.path.join(self.dataset_dir, context_line_parts[0])
+        context_clean_path = os.path.join(self.dataset_dir, self.image_dir, os.path.basename(context_image_path))
         
         return context_image_path, context_clean_path
 
     def __getitem__(self, index):
         index = index % self.length
+        current_annotation_line = self.annotation_lines[index]
 
         if self.mosaic:
             if self.rand() < 0.5 and self.epoch_now < self.epoch_length * self.mosaic_ratio:
                 lines = sample(self.annotation_lines, 3)
-                lines.append(self.annotation_lines[index])
-                clearlines = sample(self.clearimage_lines, 3)
-                clearlines.append(self.clearimage_lines[index])
+                lines.append(current_annotation_line)
                 shuffle(lines)
-                shuffle(clearlines)
-                image, box, clearimg = self.get_random_data_with_Mosaic(lines, self.input_shape, clearlines)
+                image, box, clearimg = self.get_random_data(current_annotation_line, self.input_shape, random=self.train)
             else:
-                image, box, clearimg = self.get_random_data(self.annotation_lines[index], self.input_shape, random=self.train)
+                image, box, clearimg = self.get_random_data(current_annotation_line, self.input_shape, random=self.train)
         else:
-            image, box, clearimg = self.get_random_data(self.annotation_lines[index], self.input_shape, random=self.train)
+            image, box, clearimg = self.get_random_data(current_annotation_line, self.input_shape, random=self.train)
         
         image = np.transpose(preprocess_input(np.array(image, dtype=np.float32)), (2, 0, 1))
         box = np.array(box, dtype=np.float32)
@@ -95,7 +111,7 @@ class YoloDataset(Dataset):
         
         # Get context pairs if DCE is enabled
         if self.use_dce:
-            degrad_context_path, clean_context_path = self._get_context_pair(index)
+            degrad_context_path, clean_context_path = self._get_context_pair(current_annotation_line)
             
             # Load and preprocess context images for CLIP
             try:
@@ -127,7 +143,6 @@ class YoloDataset(Dataset):
         image = cvtColor(image)
 
         clean_path = os.path.join(self.dataset_dir, self.image_dir, image_path.split('/')[-1])
-        # print(image_path, '||', clean_path)
         clearimg = Image.open(clean_path)
         clearimg = cvtColor(clearimg)
 
@@ -148,7 +163,6 @@ class YoloDataset(Dataset):
             new_image.paste(image, (dx, dy))
             image_data = np.array(new_image, np.float32)
 
-            '''clear'''
             clearimg = clearimg.resize((nw, nh), Image.BICUBIC)
             new_clearimg = Image.new('RGB', (w, h), (128, 128, 128))
             new_clearimg.paste(clearimg, (dx, dy))
@@ -185,7 +199,6 @@ class YoloDataset(Dataset):
         new_image.paste(image, (dx, dy))
         image = new_image
 
-        '''clear'''
         new_clearimg = Image.new('RGB', (w, h), (128, 128, 128))
         new_clearimg.paste(clearimg, (dx, dy))
         clearimg = new_clearimg
