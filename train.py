@@ -34,7 +34,7 @@ if __name__ == "__main__":
     # Add DCE flag
     use_dce = True  # Set to True to enable DCE, False for original behavior
 
-    Init_Epoch = 55
+    Init_Epoch = 0
     Freeze_Epoch = 0
     Freeze_batch_size = 16
 
