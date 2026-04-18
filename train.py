@@ -1,5 +1,5 @@
 import os
-
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
@@ -18,14 +18,14 @@ from utils.utils_fit import fit_one_epoch
 if __name__ == "__main__":
     Cuda = True
     os.environ["CUDA_VISIBLE_DEVICES"] = '0'
-    classes_path = '/content/RDMNet/model_data/rtts_classes.txt'
-    model_path = 'model_data/yolox_s.pth'                 # Pretrained weights for better performance (COCO or VOC）
+    classes_path = 'model_data/rtts_classes.txt'
+    model_path = 'logs\ep055-loss1.635-val_loss1.764.pth'                 # Pretrained weights for better performance (COCO or VOC）
     # model_path = ''  # No pretrained weights
-    dataset_dir = r'/content/Datasets(2)'
+    dataset_dir = r'Datasets(2)/Datasets(2)'
 
     weather = 'Mixed'  # Snow, Rain, Haze, Mixed
-    train_annotation_path = f'/content/RDMNet/Datasets/train_{weather}.txt'
-    val_annotation_path = f'/content/RDMNet/Datasets/test_Snow.txt'
+    train_annotation_path = f'Datasets/train_{weather}.txt'
+    val_annotation_path = f'Datasets/test_Snow.txt'
 
     input_shape = [640, 640]
     phi = 's'
@@ -34,7 +34,7 @@ if __name__ == "__main__":
     # Add DCE flag
     use_dce = True  # Set to True to enable DCE, False for original behavior
 
-    Init_Epoch = 0
+    Init_Epoch = 55
     Freeze_Epoch = 0
     Freeze_batch_size = 16
 
@@ -66,7 +66,7 @@ if __name__ == "__main__":
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model_dict = model.state_dict()
         pretrained_dict = torch.load(model_path, map_location=device)
-        pretrained_dict = {k: v for k, v in pretrained_dict.items() if np.shape(model_dict[k]) == np.shape(v)}
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict and np.shape(model_dict[k]) == np.shape(v)}
         model_dict.update(pretrained_dict)
         model.load_state_dict(model_dict)
 
@@ -168,3 +168,4 @@ if __name__ == "__main__":
         set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
 
         fit_one_epoch(model_train, model, yolo_loss, loss_history, optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val, UnFreeze_Epoch, Cuda, save_period)
+
