@@ -6,6 +6,7 @@ import torch.nn as nn
 from nets.darknet import BaseConv, CSPDarknet, CSPLayer, DWConv, SCBottleneck
 from nets.degradation_encoder import UDE
 from nets.restoration import Encoder, Decoder, UpSample, CAB
+from nets.mfib import MFIB
 
 
 class YOLOXHead(nn.Module):
@@ -145,25 +146,26 @@ class MBFFB(nn.Module):
     def __init__(self, n_feats, w_d, w_r, relu=False):
         super().__init__()
         # 20x20x1024
-        self.cab1 = CAB(n_feats * 16, reduction=8, relu=relu)
+        self.mfib1 = MFIB(dim=n_feats * 16)
         self.up1 = UpSample(n_feats * 16, s_factor=2)
         # 40x40x512
-        self.cab2 = CAB(n_feats * 8, reduction=8, relu=relu)
+        self.mfib2 = MFIB(dim=n_feats * 8)
         self.up2 = UpSample(n_feats * 8, s_factor=2)
         # 80x80x256
-        self.cab3 = CAB(n_feats * 4, reduction=8, relu=relu)
+        self.mfib3 = MFIB(dim=n_feats * 4)
 
         self.w_d = nn.Parameter(torch.FloatTensor(w_d), requires_grad=True)
         self.w_r = nn.Parameter(torch.FloatTensor(w_r), requires_grad=True)
 
     def forward(self, x_d, x_r):
         x_d, x_r = x_d[::-1], x_r[::-1]
-        x_20 = self.cab1(self.w_d[0] * x_d[0] + self.w_r[0] * x_r[0])
+        x_20 = self.mfib1(self.w_d[0] * x_d[0], self.w_r[0] * x_r[0])
         x_40 = self.up1(x_20)
-        x_40 = self.cab2(x_40 + self.w_d[1] * x_d[1] + self.w_r[1] * x_r[1])
+        x_40 = self.mfib2(x_40 + self.w_d[1] * x_d[1], self.w_r[1] * x_r[1])
         x_80 = self.up2(x_40)
-        x_80 = self.cab3(x_80 + self.w_d[2] * x_d[2] + self.w_r[2] * x_r[2])
+        x_80 = self.mfib3(x_80 + self.w_d[2] * x_d[2], self.w_r[2] * x_r[2])
         return x_80, x_40, x_20
+
 
 
 class YOLOPAFPN(nn.Module):
