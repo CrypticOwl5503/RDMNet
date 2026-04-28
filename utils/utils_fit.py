@@ -65,10 +65,15 @@ def fit_one_epoch(model_train, model, yolo_loss, loss_history, optimizer, epoch,
             # save_image(restored[0], './results/dehazing.png')
             # save_image(clearimgs[0], './results/clean.png')
             # save_image(images[0], './results/hazy.png')
+
             loss_contrs = contrast_loss(logits, labels)
-            total_loss = 0.2 * loss_det + wgt[epoch // 20] * loss_l1 + 0.1 * loss_contrs
+            
+            # Safely clamp the index so it never exceeds the length of the wgt list
+            weight_index = min(epoch // 20, len(wgt) - 1)
+            total_loss = 0.2 * loss_det + wgt[weight_index] * loss_l1 + 0.1 * loss_contrs
 
             total_loss.backward()
+
             optimizer.step()
 
             Det_loss += loss_det.item()
@@ -116,3 +121,4 @@ def fit_one_epoch(model_train, model, yolo_loss, loss_history, optimizer, epoch,
     print('Total Loss: %.3f || Val Loss: %.3f ' % (Det_loss / epoch_step, val_loss / epoch_step_val))
     if (epoch + 1) % save_period == 0 or epoch + 1 == Epoch:
         torch.save(model.state_dict(), 'logs/ep%03d-loss%.3f-val_loss%.3f.pth' % (epoch + 1, Det_loss / epoch_step, val_loss / epoch_step_val))
+

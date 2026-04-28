@@ -109,9 +109,8 @@ class MFIB(nn.Module):
         v_u_h = v_u_h.permute(0, 3, 2, 1)
         v_d_h = v_d_h.permute(0, 3, 2, 1)
         attn_h = torch.matmul(q_u_h, k_d_h) * self.scale_h
-        attn_h = torch.softmax(attn_h, dim=-1)
-        x_d2u_h = torch.matmul(attn_h, v_d_h)
-        x_u2d_h = torch.matmul(attn_h.transpose(-1, -2), v_u_h)
+        x_d2u_h = torch.matmul(torch.softmax(attn_h, dim=-1), v_d_h)
+        x_u2d_h = torch.matmul(torch.softmax(attn_h.transpose(-1, -2), dim=-1), v_u_h)
 
         # w dimension
         q_u_w = q_u_w.permute(0, 2, 3, 1)
@@ -130,7 +129,7 @@ class MFIB(nn.Module):
         v_d_c = v_d_c.reshape(b, c, h * w)
         attn_c = torch.matmul(q_u_c, k_d_c) * self.scale_c
         x_d2u_c = torch.matmul(torch.softmax(attn_c, dim=-1), v_d_c).reshape(b, c, h, w)
-        x_u2d_c = torch.matmul(torch.softmax(attn_c, dim=-1), v_u_c).reshape(b, c, h, w)
+        x_u2d_c = torch.matmul(torch.softmax(attn_c.transpose(-1, -2), dim=-1), v_u_c).reshape(b, c, h, w)
 
         x_d2u = torch.cat([x_d2u_h.permute(0, 3, 2, 1), x_d2u_w.permute(0, 3, 1, 2), x_d2u_c], dim=1)
         x_u2d = torch.cat([x_u2d_h.permute(0, 3, 2, 1), x_u2d_w.permute(0, 3, 1, 2), x_u2d_c], dim=1)

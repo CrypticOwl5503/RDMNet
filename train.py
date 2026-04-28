@@ -1,5 +1,5 @@
 import os
-
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
@@ -18,24 +18,24 @@ from utils.utils_fit import fit_one_epoch
 if __name__ == "__main__":
     Cuda = True
     os.environ["CUDA_VISIBLE_DEVICES"] = '0'
-    classes_path = '/content/RDMNet/model_data/rtts_classes.txt'
-    model_path = 'model_data/yolox_s.pth'                 # Pretrained weights for better performance (COCO or VOC）
+    classes_path = 'model_data/rtts_classes.txt'
+    model_path = 'logs\ep100-loss2.316-val_loss2.442.pth'                 # Pretrained weights for better performance (COCO or VOC）
     # model_path = ''  # No pretrained weights
-    dataset_dir = r'/content/Datasets(2)'
+    dataset_dir = r'Datasets(2)/Datasets(2)'
 
-    weather = 'Snow'  # Snow, Rain, Haze, Mixed
-    train_annotation_path = f'/content/RDMNet/Datasets/train_{weather}.txt'
-    val_annotation_path = f'/content/RDMNet/Datasets/test_{weather}.txt'
+    weather = 'Mixed'  # Snow, Rain, Haze, Mixed
+    train_annotation_path = f'Datasets/train_{weather}.txt'
+    val_annotation_path = f'Datasets/test_Snow.txt'
 
     input_shape = [640, 640]
     phi = 's'
     mosaic = False
 
-    Init_Epoch = 0
+    Init_Epoch = 100
     Freeze_Epoch = 0
     Freeze_batch_size = 16
 
-    UnFreeze_Epoch = 50
+    UnFreeze_Epoch = 450
     Unfreeze_batch_size = 12
 
     Freeze_Train = False
@@ -161,3 +161,4 @@ if __name__ == "__main__":
         set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
 
         fit_one_epoch(model_train, model, yolo_loss, loss_history, optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val, UnFreeze_Epoch, Cuda, save_period)
+
